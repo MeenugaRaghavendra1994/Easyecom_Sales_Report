@@ -35,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 from datetime import date
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -65,9 +66,12 @@ GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv(
     "GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json"
 )
 PENDING_REPORT_ID_FILE = Path("easyecom_pending_report_id.txt")
+JWT_CACHE_FILE = Path("easyecom_jwt_token.json")
+JWT_VALIDITY_SECONDS = 90 * 24 * 60 * 60
+JWT_REFRESH_BUFFER_SECONDS = 5 * 60
 
-MAX_DOWNLOAD_ATTEMPTS = 40
-RETRY_SECONDS = 15
+MAX_DOWNLOAD_ATTEMPTS = 10
+RETRY_SECONDS = 30
 REQUEST_TIMEOUT = 90
 
 # Optional: set a custom User-Agent if your successful Postman request uses one.
@@ -145,6 +149,39 @@ def get_jwt_token(session: requests.Session, api_key: str,
             "Check the API-1 response structure."
         )
     log.info("JWT received. Token length: %s (token value not logged)", len(token))
+    return token
+
+
+def get_cached_jwt_token(session: requests.Session, api_key: str,
+                         email: str, password: str) -> str:
+    try:
+        cached_data = json.loads(JWT_CACHE_FILE.read_text(encoding="utf-8"))
+        cached_token = cached_data.get("token")
+        expires_at = float(cached_data.get("expires_at", 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        cached_token = None
+        expires_at = 0
+
+    if (
+        isinstance(cached_token, str)
+        and cached_token
+        and expires_at > time.time() + JWT_REFRESH_BUFFER_SECONDS
+    ):
+        log.info("Reusing cached JWT token")
+        return cached_token
+
+    if cached_token:
+        log.info("Cached JWT is expired or near expiry; requesting a new token")
+
+    token = get_jwt_token(session, api_key, email, password)
+    cache_data = {
+        "token": token,
+        "expires_at": time.time() + JWT_VALIDITY_SECONDS,
+    }
+    try:
+        JWT_CACHE_FILE.write_text(json.dumps(cache_data), encoding="utf-8")
+    except OSError:
+        log.warning("Could not save JWT cache; a new token will be requested next run")
     return token
 
 
@@ -428,7 +465,9 @@ def save_to_google_sheet(df: pd.DataFrame):
     filtered_df = clean_df.loc[
         channel.eq("B2C") & status.isin(accepted_statuses)
     ].iloc[:, selected_column_indexes]
-    filtered_df["Updated AT"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    filtered_df["Updated AT"] = datetime.now(ZoneInfo("Asia/Kolkata")).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
     log.info("STEP 5: Updating Google Sheet tab %s", SHEET_NAME)
     log.info(
@@ -473,7 +512,7 @@ def main():
     password = required_env("EASYECOM_PASSWORD")
 
     session = make_session()
-    jwt_token = get_jwt_token(session, api_key, email, password)
+    jwt_token = get_cached_jwt_token(session, api_key, email, password)
     report_id = get_or_queue_report_id(session, api_key, jwt_token)
     zip_bytes = download_zip(session, api_key, jwt_token, report_id)
     report_df = read_zip_tables(zip_bytes)
