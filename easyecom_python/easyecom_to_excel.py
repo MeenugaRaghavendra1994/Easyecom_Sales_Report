@@ -34,7 +34,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
-from zoneinfo import ZoneInfo
+from datetime import date
 
 import pandas as pd
 import requests
@@ -55,7 +55,7 @@ INVOICE_TYPE = "ALL"
 WAREHOUSE_IDS = "ix82194596416"
 DATE_TYPE = "ORDER_DATE"
 START_DATE = "2026-10-01"
-END_DATE = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+END_DATE = date.today().isoformat()
 
 SHEET_NAME = "RAW"
 GOOGLE_SHEET_ID = os.getenv(
