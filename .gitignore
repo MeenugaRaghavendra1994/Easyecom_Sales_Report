@@ -1,5 +1,6 @@
 ﻿.env
 service_account.json
+easyecom_pending_report_id.txt
 *.log
 __pycache__/
 *.pyc

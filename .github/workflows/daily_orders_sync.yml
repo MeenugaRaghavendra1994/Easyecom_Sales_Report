@@ -1,27 +1,25 @@
-name: Daily Orders Sync
+name: EasyEcom Google Sheets Sync
 
 on:
   schedule:
-    # 8:00 AM IST
-    #- cron: '30 2 * * *'
-
-    # 11:00 AM IST
+    # 11:00 AM IST (GitHub cron uses UTC).
     - cron: '30 5 * * *'
+  workflow_dispatch:
 
-    # 2:00 PM IST
-    #- cron: '30 8 * * *'
+permissions:
+  contents: read
 
-    # 5:00 PM IST
-    #- cron: '30 11 * * *'
-
-  workflow_dispatch: # Allows manual execution from GitHub Actions
+concurrency:
+  group: easyecom-google-sheets-sync
+  cancel-in-progress: false
 
 jobs:
-  run-orders-sync:
+  sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -29,17 +27,57 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests pandas pandas-gbq openpyxl google-auth urllib3
+      - name: Install dependencies
+        run: python -m pip install -r easyecom_python/requirements.txt
 
-      - name: Verify Files
-        run: |
-          ls -la
+      - name: Restore pending report state
+        id: report-state
+        uses: actions/cache/restore@v4
+        with:
+          path: easyecom_pending_report_id.txt
+          key: easyecom-report-${{ github.run_id }}
+          restore-keys: |
+            easyecom-report-
 
-      - name: Run Python Script
+      - name: Seed existing pending report ID
+        if: steps.report-state.outputs.cache-hit != 'true' && vars.EASYECOM_PENDING_REPORT_ID != ''
         env:
-          GOOGLE_APPLICATION_CREDENTIALS: key.json
+          PENDING_REPORT_ID: ${{ vars.EASYECOM_PENDING_REPORT_ID }}
+        run: printf '%s' "$PENDING_REPORT_ID" > easyecom_pending_report_id.txt
+
+      - name: Create Google service-account file
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
-          python "main.py"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          credentials = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+          if not credentials:
+              raise SystemExit("Missing repository secret GOOGLE_SERVICE_ACCOUNT_JSON")
+          Path("service_account.json").write_text(credentials, encoding="utf-8")
+          PY
+
+      - name: Run EasyEcom sync
+        env:
+          EASYECOM_API_KEY: ${{ secrets.EASYECOM_API_KEY }}
+          EASYECOM_EMAIL: ${{ secrets.EASYECOM_EMAIL }}
+          EASYECOM_PASSWORD: ${{ secrets.EASYECOM_PASSWORD }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
+        run: python easyecom_python/easyecom_to_excel.py
+
+      - name: Ensure report state exists
+        if: always()
+        run: touch easyecom_pending_report_id.txt
+
+      - name: Save pending report state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: easyecom_pending_report_id.txt
+          key: easyecom-report-${{ github.run_id }}
+
+      - name: Remove service-account file
+        if: always()
+        run: rm -f service_account.json
